@@ -1,67 +1,43 @@
 package main
 
 import (
-	"context"
-	"errors"
-	"fmt"
-	openai "github.com/sashabaranov/go-openai"
-	"io"
-	"os"
+	"bot/handlers"
+	"github.com/gin-contrib/cors"
+	"github.com/gin-gonic/gin"
+	log "github.com/sirupsen/logrus"
+	"time"
 )
 
 func main() {
-	token := os.Getenv("OPENAI_API_KEY")
-	c := openai.NewClient(token)
-	ctx := context.Background()
+	log.SetFormatter(&log.JSONFormatter{})
+	log.SetLevel(log.InfoLevel)
+	r := gin.Default()
 
-	const approxTokensPerWord = 4
-	const wordCount = 100
-	requiredTokens := approxTokensPerWord * wordCount
+	clients := make(map[string]chan []byte)
 
-	var historyMessages []openai.ChatCompletionMessage
-	var content string
-	for {
-		fmt.Print("：")
-		_, err := fmt.Scanln(&content)
+	r.Use(cors.New(cors.Config{
+		AllowOrigins: []string{"http://localhost:5173"},
+		AllowMethods: []string{"GET", "POST"},
+		AllowHeaders: []string{"Origin"},
+		MaxAge:       12 * time.Hour,
+	}))
+	r.Use(func(c *gin.Context) {
+		c.Next()
+		err := c.Errors.Last()
 		if err != nil {
-			return
+			c.AbortWithStatusJSON(400, gin.H{"error": err.Error()})
 		}
-		message := openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleUser,
-			Content: content,
-		}
+	})
+	r.GET("/chats", func(c *gin.Context) {
+		log.Info("GET /chats")
+		handlers.Chats(c, clients)
+	})
+	r.POST("/assistant", func(c *gin.Context) {
+		handlers.Assistant(c, clients)
+	})
 
-		historyMessages = append(historyMessages, message)
-
-		req := openai.ChatCompletionRequest{
-			Model:     openai.GPT3Dot5Turbo,
-			MaxTokens: requiredTokens, // Updated to accommodate a 1000-word story
-			Messages:  historyMessages,
-			Stream:    true,
-		}
-		stream, err := c.CreateChatCompletionStream(ctx, req)
-		if err != nil {
-			fmt.Printf("ChatCompletionStream error: %v\n", err)
-			return
-		}
-		defer stream.Close()
-
-		fmt.Printf("Stream response: ")
-		for {
-			response, err := stream.Recv()
-			if errors.Is(err, io.EOF) {
-				fmt.Println()
-				break
-			}
-
-			if err != nil {
-				fmt.Printf("\nStream error: %v\n", err)
-				return
-			}
-
-			for _, message := range response.Choices {
-				fmt.Printf(message.Delta.Content)
-			}
-		}
+	err := r.Run(":8080")
+	if err != nil {
+		return
 	}
 }
